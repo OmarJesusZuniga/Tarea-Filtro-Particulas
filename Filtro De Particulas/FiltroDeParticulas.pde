@@ -79,6 +79,7 @@ class Ambiente {
   float senseX() {
     return position.x + randomGaussian() + errorMove;
   }
+
   float senseY() {
     return position.y + randomGaussian() * errorMove;
   }
@@ -134,10 +135,28 @@ class Agente {
       weight     = other.weight;
     }
 
-    void calcWeight(float X, float Y, PVector dir, float movimiento) {
-      // su código aquí
-      weight = 1.0;
+    /*    SE PUEDE EDITAR    */
+    void calcWeight(float X, float Y, PVector dir, float movimientoMedido) {
+      float sigmaPos = errorMove  * 0.5f;
+      float sigmaAng = errorAngle * 0.5f;
+      float sigmaMov = errorMove  * 0.5f;
+
+      float dx = position.x - X;
+      float dy = position.y - Y;
+      float pPos = exp( -(dx*dx + dy*dy) / (2 * sigmaPos*sigmaPos) );
+
+      float angObs = atan2(dir.y, dir.x);
+      float dAng   = angle - angObs;
+      dAng = ((dAng + PI) % TWO_PI) - PI;
+      float pAng = exp( -dAng*dAng / (2 * sigmaAng*sigmaAng) );
+
+      float dm   = movimiento - movimientoMedido;
+      float pMov = exp( -dm*dm / (2 * sigmaMov*sigmaMov) );
+
+      float w = pPos * pAng * pMov;
+      weight = max(w, Float.MIN_VALUE);
     }
+
 
     void borders() {
       if (position.x < -r) position.x = size+r;
@@ -195,17 +214,44 @@ class Agente {
       candidatos.add(new particle(x, y, angulo, paso, rotacion, errMove, errAng));
   }
 
+  /*    SE PUEDE EDITAR    */
   void filtre(float X, float Y, PVector dir, float movimiento) {
-    ArrayList<particle> nuevos;
-    nuevos = new ArrayList<particle>();
-
-    for (particle p : candidatos)
-      p.calcWeight(X, Y, dir, movimiento);
-
-    for (int i = 0; i < numParticulas; ++i) {
-      // su código aquí
+    for (particle p : candidatos) {
+      p.position.x += dir.x * movimiento + randomGaussian() * p.errorMove;
+      p.position.y += dir.y * movimiento + randomGaussian() * p.errorMove;
+      p.direction.set(cos(p.angle), sin(p.angle));
     }
-    // candidatos = nuevos;
+
+    float totalW = 0;
+    for (particle p : candidatos) {
+      p.calcWeight(X, Y, dir, movimiento);
+      totalW += p.weight;
+    }
+    if (totalW <= 0) {
+      for (particle p : candidatos) p.weight = 1.0f/numParticulas;
+      totalW = 1.0f;
+    }
+    for (particle p : candidatos) {
+      p.weight /= totalW;
+    }
+
+    ArrayList<particle> nuevos = new ArrayList<particle>();
+    float r   = random(1.0f/numParticulas);
+    float c   = candidatos.get(0).weight;
+    int idx   = 0;
+    for (int m = 0; m < numParticulas; m++) {
+      float U = r + m * (1.0f/numParticulas);
+      while (U > c) {
+        idx++;
+        c += candidatos.get(idx).weight;
+      }
+      particle padre = candidatos.get(idx);
+      particle hijo  = new particle(padre);
+
+      nuevos.add(hijo);
+    }
+
+    candidatos = nuevos;
   }
 
   void left() {
