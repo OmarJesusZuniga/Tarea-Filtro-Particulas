@@ -135,26 +135,30 @@ class Agente {
       weight     = other.weight;
     }
 
-    /*    SE PUEDE EDITAR    */
-    void calcWeight(float X, float Y, PVector dir, float movimientoMedido) {
-      float sigmaPos = errorMove  * 0.5f;
-      float sigmaAng = errorAngle * 0.5f;
-      float sigmaMov = errorMove  * 0.5f;
+    void calcWeight(float X, float Y, PVector dirObs, float movObs) {
+      final float σ_pos = errorMove;
+      final float σ_vel = errorMove;
 
-      float dx = position.x - X;
-      float dy = position.y - Y;
-      float pPos = exp( -(dx*dx + dy*dy) / (2 * sigmaPos*sigmaPos) );
+      float ePosX = position.x - X;
+      float ePosY = position.y - Y;
+      float posQuad = ePosX*ePosX + ePosY*ePosY;
 
-      float angObs = atan2(dir.y, dir.x);
-      float dAng   = angle - angObs;
-      dAng = ((dAng + PI) % TWO_PI) - PI;
-      float pAng = exp( -dAng*dAng / (2 * sigmaAng*sigmaAng) );
+      float p_pos = exp(-posQuad / (2.0f * σ_pos * σ_pos));
 
-      float dm   = movimiento - movimientoMedido;
-      float pMov = exp( -dm*dm / (2 * sigmaMov*sigmaMov) );
+      float Δx_obs = dirObs.x * movObs;
+      float Δy_obs = dirObs.y * movObs;
 
-      float w = pPos * pAng * pMov;
-      weight = max(w, Float.MIN_VALUE);
+      float Δx_par = direction.x * movimiento;
+      float Δy_par = direction.y * movimiento;
+
+      float eVelX  = Δx_par - Δx_obs;
+      float eVelY  = Δy_par - Δy_obs;
+      float velQuad = eVelX*eVelX + eVelY*eVelY;
+
+      float p_vel = exp(-velQuad / (2.0f * σ_vel * σ_vel));
+
+      float w = p_pos * p_vel;
+      weight  = max(w, 1e-20f);
     }
 
 
@@ -214,43 +218,59 @@ class Agente {
       candidatos.add(new particle(x, y, angulo, paso, rotacion, errMove, errAng));
   }
 
-  /*    SE PUEDE EDITAR    */
-  void filtre(float X, float Y, PVector dir, float movimiento) {
+
+  void filtre(float X, float Y, PVector dirObs, float movObs) {
     for (particle p : candidatos) {
-      p.position.x += dir.x * movimiento + randomGaussian() * p.errorMove;
-      p.position.y += dir.y * movimiento + randomGaussian() * p.errorMove;
+      float nAng = randomGaussian() * p.errorAngle * 0.30f;
+      float nMov = randomGaussian() * p.errorMove  * 0.30f;
+
+      p.angle = atan2(dirObs.y, dirObs.x) + radians(nAng);
       p.direction.set(cos(p.angle), sin(p.angle));
+
+      p.movimiento = movObs + nMov;
+      p.position.x += p.direction.x * p.movimiento;
+      p.position.y += p.direction.y * p.movimiento;
+      p.borders();
     }
 
-    float totalW = 0;
+    float sumW = 0;
     for (particle p : candidatos) {
-      p.calcWeight(X, Y, dir, movimiento);
-      totalW += p.weight;
+      p.calcWeight(X, Y, dirObs, movObs);
+      sumW += p.weight;
     }
-    if (totalW <= 0) {
+    if (sumW == 0) {
       for (particle p : candidatos) p.weight = 1.0f/numParticulas;
-      totalW = 1.0f;
+      sumW = 1;
     }
-    for (particle p : candidatos) {
-      p.weight /= totalW;
-    }
+    for (particle p : candidatos) p.weight /= sumW;
 
     ArrayList<particle> nuevos = new ArrayList<particle>();
     float r   = random(1.0f/numParticulas);
     float c   = candidatos.get(0).weight;
-    int idx   = 0;
+    int   i   = 0;
+
+    float σRpos = 0.01f * size / sqrt(numParticulas);
+    float σRang = 0.01f * TWO_PI / sqrt(numParticulas);
+
     for (int m = 0; m < numParticulas; m++) {
       float U = r + m * (1.0f/numParticulas);
       while (U > c) {
-        idx++;
-        c += candidatos.get(idx).weight;
+        i++;
+        c += candidatos.get(i).weight;
       }
-      particle padre = candidatos.get(idx);
-      particle hijo  = new particle(padre);
+
+      particle hijo = new particle(candidatos.get(i));
+
+      hijo.position.x += randomGaussian() * σRpos;
+      hijo.position.y += randomGaussian() * σRpos;
+      hijo.angle      += randomGaussian() * σRang;
+      hijo.direction.set(cos(hijo.angle), sin(hijo.angle));
+
+      hijo.movimiento += randomGaussian() * hijo.errorMove * 0.10f;
+      hijo.weight      = 1.0f/numParticulas;
 
       nuevos.add(hijo);
     }
-
     candidatos = nuevos;
   }
 
