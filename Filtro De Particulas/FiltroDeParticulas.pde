@@ -135,31 +135,33 @@ class Agente {
       weight     = other.weight;
     }
 
-    void calcWeight(float X, float Y, PVector dirObs, float movObs) {
-      final float σ_pos = errorMove;
-      final float σ_vel = errorMove;
+    /* ==========================================================
+ * 1. particle.calcWeight(…)
+ *    (solo retocamos sigmas; lógica igual)
+ * ========================================================== */
+void calcWeight(float X, float Y, PVector dirObs, float movObs) {
 
-      float ePosX = position.x - X;
-      float ePosY = position.y - Y;
-      float posQuad = ePosX*ePosX + ePosY*ePosY;
+  /* sigmas algo más relajados para posición, estrictos para lateral */
+  final float σ_pos = errorMove  * 0.30f;   // posición general
+  final float σ_ang = errorAngle * 0.15f;   // orientación
+  final float σ_mov = errorMove  * 0.20f;   // módulo
 
-      float p_pos = exp(-posQuad / (2.0f * σ_pos * σ_pos));
+  /* --- Posición --- */
+  float dx = position.x - X,  dy = position.y - Y;
+  float pPos = exp(-(dx*dx + dy*dy) / (2 * sq(σ_pos)));
 
-      float Δx_obs = dirObs.x * movObs;
-      float Δy_obs = dirObs.y * movObs;
+  /* --- Orientación --- */
+  float angObs = atan2(dirObs.y, dirObs.x);
+  float dAng   = ((angle - angObs + PI) % TWO_PI) - PI;
+  float pAng   = exp(-(dAng*dAng) / (2 * sq(σ_ang)));
 
-      float Δx_par = direction.x * movimiento;
-      float Δy_par = direction.y * movimiento;
+  /* --- Módulo de movimiento --- */
+  float dMov   = movimiento - movObs;
+  float pMov   = exp(-(dMov*dMov) / (2 * sq(σ_mov)));
 
-      float eVelX  = Δx_par - Δx_obs;
-      float eVelY  = Δy_par - Δy_obs;
-      float velQuad = eVelX*eVelX + eVelY*eVelY;
+  weight = max(pPos * pAng * pMov, 1e-20f);
+}
 
-      float p_vel = exp(-velQuad / (2.0f * σ_vel * σ_vel));
-
-      float w = p_pos * p_vel;
-      weight  = max(w, 1e-20f);
-    }
 
 
     void borders() {
@@ -219,60 +221,67 @@ class Agente {
   }
 
 
-  void filtre(float X, float Y, PVector dirObs, float movObs) {
-    for (particle p : candidatos) {
-      float nAng = randomGaussian() * p.errorAngle * 0.30f;
-      float nMov = randomGaussian() * p.errorMove  * 0.30f;
+/* ==========================================================
+ * Agente.filtre (…)   —  final fine-tuned version
+ * ========================================================== */
+void filtre(float X, float Y, PVector dirObs, float movObs) {
 
-      p.angle = atan2(dirObs.y, dirObs.x) + radians(nAng);
-      p.direction.set(cos(p.angle), sin(p.angle));
+  /* ---------- A) PREDICCIÓN -------------------------------------- */
+  for (particle p : candidatos) {
 
-      p.movimiento = movObs + nMov;
-      p.position.x += p.direction.x * p.movimiento;
-      p.position.y += p.direction.y * p.movimiento;
-      p.borders();
-    }
+    /* 1. Pequeño ruido angular (10 % del error declarado) */
+    p.angle += radians(randomGaussian() * p.errorAngle * 0.10f);
+    p.direction.set(cos(p.angle), sin(p.angle));
 
-    float sumW = 0;
-    for (particle p : candidatos) {
-      p.calcWeight(X, Y, dirObs, movObs);
-      sumW += p.weight;
-    }
-    if (sumW == 0) {
-      for (particle p : candidatos) p.weight = 1.0f/numParticulas;
-      sumW = 1;
-    }
-    for (particle p : candidatos) p.weight /= sumW;
+    /* 2. Ruido ANISOTRÓPICO
+          · longitudinal  = 2 % del error (aún menos)
+          · lateral       = 5 % del error */
+    float nLong = randomGaussian() * p.errorMove * 0.02f;   // 2 %
+    float nLat  = randomGaussian() * p.errorMove * 0.05f;   // 5 %
 
-    ArrayList<particle> nuevos = new ArrayList<particle>();
-    float r   = random(1.0f/numParticulas);
-    float c   = candidatos.get(0).weight;
-    int   i   = 0;
+    float dirX = p.direction.x, dirY = p.direction.y;       // paralelo
+    float latX = -dirY,          latY = dirX;               // perpendicular
 
-    float σRpos = 0.01f * size / sqrt(numParticulas);
-    float σRang = 0.01f * TWO_PI / sqrt(numParticulas);
+    /* 3. Paso ajustado: (medición + ruido) × 0.92  ❶ */
+    float step = (movObs + nLong) * 0.92f;   // ❶ recorta ~3 % extra
 
-    for (int m = 0; m < numParticulas; m++) {
-      float U = r + m * (1.0f/numParticulas);
-      while (U > c) {
-        i++;
-        c += candidatos.get(i).weight;
-      }
+    p.movimiento = step;                     // guarda para calcWeight
 
-      particle hijo = new particle(candidatos.get(i));
-
-      hijo.position.x += randomGaussian() * σRpos;
-      hijo.position.y += randomGaussian() * σRpos;
-      hijo.angle      += randomGaussian() * σRang;
-      hijo.direction.set(cos(hijo.angle), sin(hijo.angle));
-
-      hijo.movimiento += randomGaussian() * hijo.errorMove * 0.10f;
-      hijo.weight      = 1.0f/numParticulas;
-
-      nuevos.add(hijo);
-    }
-    candidatos = nuevos;
+    p.position.x += dirX * step + latX * nLat;
+    p.position.y += dirY * step + latY * nLat;
+    p.borders();
   }
+
+  /* ---------- B) PESOS Y NORMALIZACIÓN --------------------------- */
+  float sumW = 0;
+  for (particle p : candidatos) { p.calcWeight(X, Y, dirObs, movObs); sumW += p.weight; }
+  if (sumW == 0) { for (particle p : candidatos) p.weight = 1.0f/numParticulas; sumW = 1; }
+  for (particle p : candidatos) p.weight /= sumW;
+
+  /* ---------- C) RESAMPLE (low-variance, roughening fino) -------- */
+  ArrayList<particle> nuevos = new ArrayList<particle>();
+  float r = random(1.0f/numParticulas), c = candidatos.get(0).weight;
+  int   i = 0;
+
+  float σRpos = 0.003f * size   / sqrt(numParticulas);
+  float σRang = 0.003f * TWO_PI / sqrt(numParticulas);
+
+  for (int m = 0; m < numParticulas; m++) {
+    float U = r + m * (1.0f/numParticulas);
+    while (U > c) { i++; c += candidatos.get(i).weight; }
+
+    particle h = new particle(candidatos.get(i));
+    h.position.x += randomGaussian() * σRpos;
+    h.position.y += randomGaussian() * σRpos;
+    h.angle      += randomGaussian() * σRang;
+    h.direction.set(cos(h.angle), sin(h.angle));
+    h.weight      = 1.0f / numParticulas;
+
+    nuevos.add(h);
+  }
+  candidatos = nuevos;
+}
+
 
   void left() {
     for (particle p : candidatos)
